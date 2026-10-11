@@ -1,0 +1,791 @@
+name: Build and Deploy WebOS VR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: webos-vr-pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate WebOS VR
+        shell: bash
+        run: |
+          mkdir -p site
+
+          cat > site/index.html <<'HTML'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>WebOS VR</title>
+
+          <style>
+          * { box-sizing: border-box; }
+
+          body {
+            margin: 0;
+            overflow: hidden;
+            background: #050711;
+            color: white;
+            font-family: Arial, sans-serif;
+          }
+
+          canvas { display: block; }
+
+          #crosshair {
+            position: fixed;
+            z-index: 10;
+            left: 50%;
+            top: 50%;
+            width: 22px;
+            height: 22px;
+            transform: translate(-50%, -50%);
+            border: 2px solid white;
+            border-radius: 50%;
+            pointer-events: none;
+          }
+
+          #crosshair::before,
+          #crosshair::after {
+            content: "";
+            position: absolute;
+            background: white;
+          }
+
+          #crosshair::before {
+            width: 2px;
+            height: 32px;
+            left: 8px;
+            top: -7px;
+          }
+
+          #crosshair::after {
+            width: 32px;
+            height: 2px;
+            left: -7px;
+            top: 8px;
+          }
+
+          #crosshair.target {
+            border-color: #42ffad;
+            box-shadow: 0 0 12px #42ffad;
+          }
+
+          #crosshair.target::before,
+          #crosshair.target::after {
+            background: #42ffad;
+          }
+
+          #progress {
+            position: fixed;
+            z-index: 11;
+            left: 50%;
+            top: 50%;
+            width: 36px;
+            height: 36px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            pointer-events: none;
+            background: conic-gradient(
+              #42ffad var(--p, 0%),
+              transparent 0
+            );
+            mask: radial-gradient(
+              farthest-side, transparent 75%, black 77%
+            );
+          }
+
+          #toolbar {
+            position: fixed;
+            z-index: 20;
+            top: 12px;
+            left: 12px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+          }
+
+          button {
+            padding: 11px 14px;
+            color: white;
+            background: #172b4d;
+            border: 1px solid #6387bb;
+            border-radius: 8px;
+            cursor: pointer;
+          }
+
+          button:hover { background: #28518a; }
+
+          #status {
+            position: fixed;
+            z-index: 20;
+            top: 12px;
+            right: 12px;
+            background: #101b30dd;
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 12px;
+          }
+
+          #help {
+            position: fixed;
+            z-index: 20;
+            bottom: 12px;
+            left: 12px;
+            right: 12px;
+            text-align: center;
+            font-size: 13px;
+            color: #d6e4ff;
+            text-shadow: 0 1px 5px black;
+            pointer-events: none;
+          }
+          </style>
+
+          <script type="importmap">
+          {
+            "imports": {
+              "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"
+            }
+          }
+          </script>
+          </head>
+
+          <body>
+          <div id="crosshair"></div>
+          <div id="progress"></div>
+
+          <div id="toolbar">
+            <button id="vrButton">Enter VR</button>
+            <button id="bootButton">Reboot</button>
+          </div>
+
+          <div id="status">WebOS VR · Starting</div>
+
+          <div id="help">
+            Aim at a button and wait 1.5 seconds, or use your mouse.
+          </div>
+
+          <script type="module">
+          import * as THREE from "three";
+
+          const scene = new THREE.Scene();
+          scene.background = new THREE.Color(0x050711);
+
+          const camera = new THREE.PerspectiveCamera(
+            70, innerWidth / innerHeight, 0.05, 100
+          );
+
+          camera.position.set(0, 1.6, 0);
+
+          const renderer = new THREE.WebGLRenderer({ antialias: true });
+          renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+          renderer.setSize(innerWidth, innerHeight);
+          renderer.xr.enabled = true;
+          renderer.xr.setReferenceSpaceType("local-floor");
+          document.body.appendChild(renderer.domElement);
+
+          scene.add(new THREE.HemisphereLight(0xc5ddff, 0x151020, 2));
+
+          const lamp = new THREE.DirectionalLight(0xffffff, 2);
+          lamp.position.set(2, 5, 3);
+          scene.add(lamp);
+
+          // Virtual environment stars.
+          const stars = [];
+          for (let i = 0; i < 600; i++) {
+            stars.push(
+              (Math.random() - 0.5) * 35,
+              Math.random() * 18,
+              -Math.random() * 30 - 2
+            );
+          }
+
+          const starGeometry = new THREE.BufferGeometry();
+          starGeometry.setAttribute(
+            "position",
+            new THREE.Float32BufferAttribute(stars, 3)
+          );
+
+          scene.add(new THREE.Points(
+            starGeometry,
+            new THREE.PointsMaterial({ color: 0x8dbbff, size: 0.035 })
+          ));
+
+          // Virtual tablet.
+          const tablet = new THREE.Group();
+          tablet.position.set(0, 1.6, -2.5);
+          scene.add(tablet);
+
+          tablet.add(new THREE.Mesh(
+            new THREE.BoxGeometry(2.12, 1.37, 0.09),
+            new THREE.MeshStandardMaterial({
+              color: 0x252d3c,
+              metalness: 0.6,
+              roughness: 0.3
+            })
+          ));
+
+          const screenCanvas = document.createElement("canvas");
+          screenCanvas.width = 1024;
+          screenCanvas.height = 640;
+
+          const ctx = screenCanvas.getContext("2d");
+          const texture = new THREE.CanvasTexture(screenCanvas);
+          texture.colorSpace = THREE.SRGBColorSpace;
+
+          const screen = new THREE.Mesh(
+            new THREE.PlaneGeometry(2, 1.25),
+            new THREE.MeshBasicMaterial({
+              map: texture,
+              toneMapped: false
+            })
+          );
+
+          screen.position.z = 0.051;
+          tablet.add(screen);
+
+          let page = "BOOTING";
+          let dark = true;
+          let hits = [];
+          let hovered = null;
+          let hoverStart = 0;
+          let activated = null;
+          let lastAction = 0;
+          let bootTimer = null;
+          let errorMessage = "SYSTEM HALTED!";
+          let recoveryMessage = "";
+
+          const crosshair = document.getElementById("crosshair");
+          const progress = document.getElementById("progress");
+          const status = document.getElementById("status");
+
+          function rectButton(id, label, x, y, w, h) {
+            ctx.fillStyle = hovered === id ? "#25a879" :
+              (dark ? "#243b61" : "#d7e5ff");
+
+            ctx.beginPath();
+            ctx.roundRect(x, y, w, h, 13);
+            ctx.fill();
+
+            ctx.strokeStyle = "#648ac0";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.fillStyle = dark ? "#ffffff" : "#132746";
+            ctx.font = "bold 24px Arial";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(label, x + w / 2, y + h / 2);
+
+            hits.push({ id, x, y, w, h });
+          }
+
+          function text(str, x, y, size = 24, color = null) {
+            ctx.fillStyle = color || (dark ? "#ffffff" : "#10213e");
+            ctx.font = size + "px Arial";
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(str, x, y);
+          }
+
+          function draw() {
+            ctx.fillStyle = dark ? "#101a30" : "#eef4ff";
+            ctx.fillRect(0, 0, 1024, 640);
+
+            hits = [];
+
+            if (page === "BOOTING") {
+              ctx.fillStyle = "#071020";
+              ctx.fillRect(0, 0, 1024, 640);
+
+              ctx.textAlign = "center";
+              ctx.fillStyle = "#ffffff";
+              ctx.font = "bold 60px Arial";
+              ctx.fillText("WebOS VR", 512, 240);
+
+              ctx.font = "22px Arial";
+              ctx.fillStyle = "#77c8ff";
+              ctx.fillText("BOOTING SYSTEM...", 512, 310);
+
+              ctx.fillStyle = "#20344d";
+              ctx.fillRect(312, 355, 400, 12);
+
+              ctx.fillStyle = "#38ffae";
+              ctx.fillRect(312, 355, 400 * bootProgress, 12);
+
+              ctx.font = "16px monospace";
+              ctx.fillStyle = "#a9bfdc";
+              ctx.fillText(bootText, 512, 405);
+
+            } else if (page === "HOME") {
+              header("WebOS VR", "Home");
+
+              text("Welcome to WebOS VR", 40, 130, 32);
+              text("Select an application.", 40, 170, 20);
+
+              rectButton("apps", "Apps", 40, 215, 280, 85);
+              rectButton("settings", "Settings", 370, 215, 280, 85);
+              rectButton("recovery", "Recovery Mode", 700, 215, 285, 85);
+              rectButton("clock", "Clock", 40, 325, 280, 85);
+              rectButton("about", "About", 370, 325, 280, 85);
+              rectButton("bootfail", "Simulate BOOT FAIL", 700, 325, 285, 85);
+
+              text("System state: Virtual / Simulated", 40, 490, 19);
+
+            } else if (page === "RECOVERY") {
+              header("SYSTEM RECOVERY", "Recovery Mode");
+
+              text("WebOS VR Recovery Environment", 40, 130, 28);
+              text("Choose a recovery operation:", 40, 175, 20);
+
+              rectButton("reboot", "Reboot System", 40, 220, 430, 80);
+              rectButton("factory", "Factory Reset", 530, 220, 430, 80);
+              rectButton("info", "System Information", 40, 330, 430, 80);
+              rectButton("bootfail", "BOOT FAIL Test", 530, 330, 430, 80);
+              rectButton("halt", "SYSTEM HALTED! Test", 40, 440, 430, 80);
+              rectButton("home", "Return to Home", 530, 440, 430, 80);
+
+              text(recoveryMessage, 40, 570, 18, "#45ffb0");
+
+            } else if (page === "FACTORY_CONFIRM") {
+              header("FACTORY RESET", "Confirmation");
+
+              text("Reset WebOS VR settings?", 40, 150, 32);
+              text("This clears saved virtual settings in this browser.", 40, 210, 21);
+              text("It does not reset your headset or delete its files.", 40, 255, 19, "#ffb3b3");
+
+              rectButton("factoryyes", "Confirm Factory Reset", 40, 330, 440, 90);
+              rectButton("recovery", "Cancel", 530, 330, 440, 90);
+
+            } else if (page === "RESET_DONE") {
+              header("FACTORY RESET", "Complete");
+
+              text("Factory reset completed.", 40, 160, 32, "#45ffb0");
+              text("Virtual settings have been restored.", 40, 220, 22);
+
+              rectButton("reboot", "Reboot System", 40, 330, 430, 85);
+              rectButton("home", "Return to Home", 530, 330, 430, 85);
+
+            } else if (page === "BOOT_FAIL") {
+              ctx.fillStyle = "#050505";
+              ctx.fillRect(0, 0, 1024, 640);
+
+              text("BOOT FAIL", 40, 100, 52, "#ff3333");
+              text("WebOS VR could not complete startup.", 40, 175, 24, "#ffffff");
+              text("Error code: VBOOT-001", 40, 225, 20, "#ffaaaa");
+              text("This is a simulated operating-system error.", 40, 280, 18, "#cccccc");
+
+              rectButton("recovery", "Enter Recovery Mode", 40, 360, 430, 85);
+              rectButton("reboot", "Reboot System", 530, 360, 430, 85);
+
+            } else if (page === "HALTED") {
+              ctx.fillStyle = "#050505";
+              ctx.fillRect(0, 0, 1024, 640);
+
+              text(errorMessage, 40, 100, 48, "#ff3333");
+              text("A simulated fatal system error occurred.", 40, 170, 23, "#ffffff");
+              text("The virtual system has stopped.", 40, 215, 21, "#cccccc");
+              text("Code: 0xDEAD0001", 40, 265, 19, "#ffaaaa");
+
+              rectButton("recovery", "Recovery Mode", 40, 350, 430, 85);
+              rectButton("reboot", "Reboot System", 530, 350, 430, 85);
+
+            } else if (page === "APPS") {
+              header("Applications", "Apps");
+
+              rectButton("clock", "Clock", 40, 170, 280, 85);
+              rectButton("browser", "Browser", 370, 170, 280, 85);
+              rectButton("settings", "Settings", 700, 170, 285, 85);
+              rectButton("home", "Home", 40, 420, 280, 85);
+
+            } else if (page === "SETTINGS") {
+              header("Settings", "Preferences");
+
+              rectButton("theme", dark ? "Switch to Light Theme" : "Switch to Dark Theme", 40, 180, 500, 85);
+              rectButton("recovery", "Recovery Mode", 40, 300, 430, 85);
+              rectButton("home", "Home", 530, 300, 430, 85);
+
+            } else if (page === "CLOCK") {
+              header("Virtual Clock", "Clock");
+
+              text(new Date().toLocaleTimeString(), 40, 200, 54);
+              text(new Date().toLocaleDateString(), 40, 270, 28);
+              rectButton("home", "Home", 40, 400, 280, 85);
+
+            } else if (page === "BROWSER") {
+              header("Browser", "Web");
+
+              text("WebOS VR Browser", 40, 145, 30);
+              text("Open a website in a separate browser tab.", 40, 200, 21);
+              text("Some websites block embedded content.", 40, 245, 19);
+
+              rectButton("openweb", "Open Example.com", 40, 310, 430, 85);
+              rectButton("home", "Home", 530, 310, 430, 85);
+
+            } else if (page === "ABOUT") {
+              header("About WebOS VR", "Information");
+
+              text("WebXR virtual tablet operating system.", 40, 150, 23);
+              text("Gaze crosshair with dwell interaction.", 40, 205, 22);
+              text("Recovery and error screens are simulations.", 40, 260, 19);
+
+              rectButton("home", "Home", 40, 400, 280, 85);
+
+            } else if (page === "INFO") {
+              header("System Information", "Recovery");
+
+              text("System: WebOS VR", 40, 150, 24);
+              text("Environment: WebXR / Three.js", 40, 200, 21);
+              text("Recovery: Available", 40, 250, 21);
+              text("Storage: Browser local storage", 40, 300, 21);
+
+              rectButton("recovery", "Back to Recovery", 40, 410, 430, 85);
+            }
+
+            texture.needsUpdate = true;
+          }
+
+          function header(title, subtitle) {
+            ctx.fillStyle = dark ? "#172744" : "#d5e5ff";
+            ctx.fillRect(0, 0, 1024, 78);
+
+            text(title, 30, 39, 32);
+
+            ctx.textAlign = "right";
+            ctx.fillStyle = dark ? "#c9dcff" : "#132746";
+            ctx.font = "18px Arial";
+            ctx.fillText(subtitle, 990, 39);
+          }
+
+          let bootProgress = 0;
+          let bootText = "Initializing virtual hardware...";
+
+          function boot() {
+            clearInterval(bootTimer);
+            page = "BOOTING";
+            bootProgress = 0;
+            bootText = "Initializing virtual hardware...";
+            status.textContent = "WebOS VR · Booting";
+            hovered = null;
+            activated = null;
+            draw();
+
+            const steps = [
+              "Initializing virtual hardware...",
+              "Loading WebXR interface...",
+              "Starting virtual services...",
+              "Loading WebOS desktop...",
+              "Startup complete."
+            ];
+
+            let i = 0;
+
+            bootTimer = setInterval(() => {
+              bootProgress = Math.min(1, bootProgress + 0.25);
+              bootText = steps[Math.min(i, steps.length - 1)];
+              i++;
+              draw();
+
+              if (bootProgress >= 1) {
+                clearInterval(bootTimer);
+                bootTimer = null;
+
+                setTimeout(() => {
+                  if (page === "BOOTING") {
+                    page = "HOME";
+                    status.textContent = "WebOS VR · Ready";
+                    draw();
+                  }
+                }, 400);
+              }
+            }, 500);
+          }
+
+          function resetSettings() {
+            // Only remove WebOS VR's own saved settings.
+            localStorage.removeItem("webos-vr-theme");
+            dark = true;
+            recoveryMessage = "Reset completed.";
+            page = "RESET_DONE";
+            status.textContent = "WebOS VR · Factory Reset Complete";
+            draw();
+          }
+
+          function activate(id) {
+            if (!id) return;
+
+            switch (id) {
+              case "home":
+                page = "HOME";
+                break;
+
+              case "apps":
+                page = "APPS";
+                break;
+
+              case "settings":
+                page = "SETTINGS";
+                break;
+
+              case "recovery":
+                page = "RECOVERY";
+                recoveryMessage = "";
+                break;
+
+              case "factory":
+                page = "FACTORY_CONFIRM";
+                break;
+
+              case "factoryyes":
+                resetSettings();
+                return;
+
+              case "reboot":
+                boot();
+                return;
+
+              case "bootfail":
+                page = "BOOT_FAIL";
+                break;
+
+              case "halt":
+                errorMessage = "SYSTEM HALTED!";
+                page = "HALTED";
+                break;
+
+              case "info":
+                page = "INFO";
+                break;
+
+              case "clock":
+                page = "CLOCK";
+                break;
+
+              case "browser":
+                page = "BROWSER";
+                break;
+
+              case "openweb":
+                window.open("https://example.com", "_blank", "noopener");
+                break;
+
+              case "about":
+                page = "ABOUT";
+                break;
+
+              case "theme":
+                dark = !dark;
+                localStorage.setItem("webos-vr-theme", dark ? "dark" : "light");
+                break;
+            }
+
+            status.textContent = "WebOS VR · " + page;
+            draw();
+          }
+
+          // Restore saved theme unless a factory reset cleared it.
+          dark = localStorage.getItem("webos-vr-theme") !== "light";
+
+          function buttonAt(x, y) {
+            return hits.find(b =>
+              x >= b.x && x <= b.x + b.w &&
+              y >= b.y && y <= b.y + b.h
+            ) || null;
+          }
+
+          const raycaster = new THREE.Raycaster();
+          const mouse = new THREE.Vector2();
+          let mouseKnown = false;
+
+          function getTarget(ndc) {
+            raycaster.setFromCamera(ndc, camera);
+            const intersections = raycaster.intersectObject(screen, false);
+
+            if (!intersections.length) return null;
+
+            const uv = intersections[0].uv;
+            return buttonAt(
+              uv.x * screenCanvas.width,
+              (1 - uv.y) * screenCanvas.height
+            );
+          }
+
+          function getGazeTarget() {
+            const xrCamera = renderer.xr.getCamera(camera);
+            const origin = new THREE.Vector3();
+            const direction = new THREE.Vector3();
+
+            xrCamera.getWorldPosition(origin);
+            xrCamera.getWorldDirection(direction);
+
+            raycaster.ray.origin.copy(origin);
+            raycaster.ray.direction.copy(direction);
+
+            const intersections = raycaster.intersectObject(screen, false);
+
+            if (!intersections.length) return null;
+
+            const uv = intersections[0].uv;
+            return buttonAt(
+              uv.x * screenCanvas.width,
+              (1 - uv.y) * screenCanvas.height
+            );
+          }
+
+          function updateTarget(target, now) {
+            const id = target ? target.id : null;
+
+            if (id !== hovered) {
+              hovered = id;
+              hoverStart = now;
+              activated = null;
+              draw();
+            }
+
+            crosshair.classList.toggle("target", !!target);
+
+            if (!target) {
+              progress.style.setProperty("--p", "0%");
+              return;
+            }
+
+            const elapsed = now - hoverStart;
+            progress.style.setProperty(
+              "--p", Math.min(100, elapsed / 1500 * 100) + "%"
+            );
+
+            if (
+              elapsed >= 1500 &&
+              activated !== id &&
+              now - lastAction > 700
+            ) {
+              activated = id;
+              lastAction = now;
+              activate(id);
+            }
+          }
+
+          renderer.domElement.addEventListener("pointermove", e => {
+            if (renderer.xr.isPresenting) return;
+
+            const r = renderer.domElement.getBoundingClientRect();
+
+            mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+            mouse.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+            mouseKnown = true;
+          });
+
+          renderer.domElement.addEventListener("pointerdown", e => {
+            if (renderer.xr.isPresenting) return;
+
+            const r = renderer.domElement.getBoundingClientRect();
+            const ndc = new THREE.Vector2(
+              ((e.clientX - r.left) / r.width) * 2 - 1,
+              -((e.clientY - r.top) / r.height) * 2 + 1
+            );
+
+            const target = getTarget(ndc);
+            if (target) activate(target.id);
+          });
+
+          document.getElementById("bootButton").onclick = boot;
+
+          document.getElementById("vrButton").onclick = async () => {
+            try {
+              if (!navigator.xr) {
+                status.textContent = "WebXR unavailable in this browser.";
+                return;
+              }
+
+              const supported =
+                await navigator.xr.isSessionSupported("immersive-vr");
+
+              if (!supported) {
+                status.textContent = "Immersive VR is unsupported.";
+                return;
+              }
+
+              const session = await navigator.xr.requestSession(
+                "immersive-vr",
+                { optionalFeatures: ["local-floor", "bounded-floor"] }
+              );
+
+              await renderer.xr.setSession(session);
+              status.textContent = "WebOS VR · VR Active";
+            } catch (e) {
+              status.textContent = "VR Error: " + e.message;
+            }
+          };
+
+          renderer.xr.addEventListener("sessionend", () => {
+            status.textContent = "WebOS VR · Ready";
+          });
+
+          renderer.setAnimationLoop(now => {
+            if (renderer.xr.isPresenting) {
+              updateTarget(getGazeTarget(), now);
+            } else if (mouseKnown) {
+              updateTarget(getTarget(mouse), now);
+            } else {
+              updateTarget(null, now);
+            }
+
+            renderer.render(scene, camera);
+          });
+
+          window.addEventListener("resize", () => {
+            camera.aspect = innerWidth / innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(innerWidth, innerHeight);
+          });
+
+          boot();
+          </script>
+          </body>
+          </html>
+          HTML
+
+          cat > site/README.md <<'DOC'
+          # WebOS VR
+
+          A WebXR virtual operating system with:
+
+          - Animated boot screen
+          - Center-screen gaze crosshair
+          - Dwell-based interaction
+          - Recovery Mode
+          - Simulated Factory Reset
+          - BOOT FAIL error screen
+          - SYSTEM HALTED! error screen
+          - Reboot option
+          - Virtual apps and settings
+
+          The recovery and error screens are simulations.
+          Factory Reset only resets WebOS VR's saved browser settings.
+
+          GitHub Pages deployment is handled by GitHub Actions.
+          DOC
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
