@@ -1,0 +1,505 @@
+<!DOCTYPE html><html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#07101e">
+<title>WebOS VR</title><style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050914;color:#fff;font-family:Arial,sans-serif}
+canvas{display:block}
+#status{position:fixed;top:12px;left:12px;z-index:5;padding:8px 12px;border:1px solid #34506e;border-radius:8px;background:#07101edd;color:#cce8ff;font-size:12px}
+#crosshair{position:fixed;left:50%;top:50%;width:22px;height:22px;border:2px solid white;border-radius:50%;transform:translate(-50%,-50%);z-index:10;pointer-events:none;box-shadow:0 0 8px #000}
+#crosshair:before,#crosshair:after{content:"";position:absolute;background:white}
+#crosshair:before{width:2px;height:30px;left:8px;top:-6px}
+#crosshair:after{height:2px;width:30px;left:-6px;top:8px}
+#crosshair.target{border-color:#35ffad;box-shadow:0 0 12px #35ffad}
+#crosshair.target:before,#crosshair.target:after{background:#35ffad}
+#help{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:5;max-width:95%;padding:9px 14px;border-radius:8px;background:#07101edd;color:#d6e7ff;text-align:center;font-size:12px;line-height:1.5}
+#start{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;background:radial-gradient(circle,#173963,#050914 72%);text-align:center}
+#start h1{font-size:clamp(36px,8vw,76px);letter-spacing:4px;margin:0 0 10px}
+#start p{max-width:570px;color:#c3d9f5;line-height:1.7}
+button{border:1px solid #5aa9ff;border-radius:10px;padding:13px 22px;background:#1264b3;color:white;font-size:15px;font-weight:bold;cursor:pointer}
+button:hover{background:#2485df}
+#start button{margin-top:18px}
+#error{margin-top:15px;color:#ff8b8b}
+.hidden{display:none!important}
+</style><script type="importmap">
+{
+  "imports":{
+    "three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script></head><body>
+<div id="status">WEBOS VR · INITIALIZING</div>
+<div id="crosshair"></div>
+<div id="help">Look at a button for 1.5 seconds to select it. On desktop, point and click.</div><div id="start">
+  <h1>WebOS VR</h1>
+  <p>A virtual operating system. Explore the desktop, Recovery Mode, settings, boot errors, and the simulated factory reset.</p>
+  <p>This is a simulation. It cannot modify your headset firmware, Android recovery, or real device storage.</p>
+  <button id="startButton">START WEBOS VR</button>
+  <div id="error"></div>
+</div><script type="module">
+import * as THREE from "three";
+import {VRButton} from "three/addons/webxr/VRButton.js";
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x050914);
+
+const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,.05,100);
+camera.position.set(0,1.6,0);
+camera.lookAt(0,1.6,-2.5);
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.xr.enabled=true;
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0xc4e5ff,0x10152b,2));
+
+const light=new THREE.DirectionalLight(0xffffff,2);
+light.position.set(2,5,3);
+scene.add(light);
+
+const floor=new THREE.Mesh(
+  new THREE.PlaneGeometry(200,200),
+  new THREE.MeshStandardMaterial({color:0x080d19,roughness:.9})
+);
+floor.rotation.x=-Math.PI/2;
+scene.add(floor);
+
+const grid=new THREE.GridHelper(200,100,0x183858,0x101d30);
+grid.position.y=.01;
+scene.add(grid);
+
+// Virtual tablet
+const screenCanvas=document.createElement("canvas");
+screenCanvas.width=1024;
+screenCanvas.height=768;
+const ctx=screenCanvas.getContext("2d");
+
+const screenTexture=new THREE.CanvasTexture(screenCanvas);
+screenTexture.colorSpace=THREE.SRGBColorSpace;
+
+const screen=new THREE.Mesh(
+  new THREE.PlaneGeometry(2.4,1.8),
+  new THREE.MeshBasicMaterial({map:screenTexture,side:THREE.DoubleSide})
+);
+screen.position.set(0,1.6,-2.505);
+scene.add(screen);
+
+const frame=new THREE.Mesh(
+  new THREE.BoxGeometry(2.48,1.88,.07),
+  new THREE.MeshStandardMaterial({color:0x18263b,metalness:.75,roughness:.25})
+);
+frame.position.set(0,1.6,-2.55);
+scene.add(frame);
+
+let page="boot";
+let bootStarted=performance.now();
+const bootDuration=2800;
+let currentTheme="blue";
+let systemMessage="";
+let highlighted=null;
+let dwellStart=0;
+let lastActivated=0;
+let hits=[];
+
+const themes={
+  blue:{background:"#07172d",panel:"#102b4b",accent:"#54b7ff"},
+  purple:{background:"#180e2b",panel:"#30204b",accent:"#c49aff"},
+  green:{background:"#071e19",panel:"#103b30",accent:"#54ffbb"}
+};
+
+const status=document.getElementById("status");
+const crosshair=document.getElementById("crosshair");
+const errorBox=document.getElementById("error");
+
+function theme(){return themes[currentTheme]||themes.blue}
+
+function roundedRect(x,y,w,h,r,fill,stroke){
+  ctx.beginPath();
+  ctx.roundRect(x,y,w,h,r);
+  if(fill){ctx.fillStyle=fill;ctx.fill()}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.stroke()}
+}
+
+function text(value,x,y,size=24,color="#fff",align="left",weight="normal"){
+  ctx.font=`${weight} ${size}px Arial`;
+  ctx.fillStyle=color;
+  ctx.textAlign=align;
+  ctx.fillText(value,x,y);
+}
+
+function button(label,x,y,w,h,action,options={}){
+  const t=theme();
+  const selected=highlighted===action;
+  const bg=options.danger?"#65212c":selected?t.accent:t.panel;
+  const fg=selected?"#07101e":"#fff";
+
+  roundedRect(x,y,w,h,12,bg,options.danger?"#ff717d":t.accent);
+  text(label,x+w/2,y+h/2+8,options.size||23,fg,"center","bold");
+  hits.push({x,y,w,h,action});
+}
+
+function header(title,subtitle=""){
+  const t=theme();
+  ctx.fillStyle=t.background;
+  ctx.fillRect(0,0,1024,768);
+  ctx.fillStyle=t.accent;
+  ctx.fillRect(0,0,1024,8);
+
+  text(title,48,75,39,"#fff","left","bold");
+  if(subtitle)text(subtitle,50,111,17,"#a9c9e9");
+
+  ctx.strokeStyle="#34506b";
+  ctx.beginPath();
+  ctx.moveTo(48,135);
+  ctx.lineTo(976,135);
+  ctx.stroke();
+
+  text("WebOS VR",976,45,17,t.accent,"right","bold");
+  text(new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),976,75,18);
+}
+
+function renderBoot(){
+  const t=theme();
+  ctx.fillStyle="#03060d";
+  ctx.fillRect(0,0,1024,768);
+
+  text("WebOS VR",512,300,58,t.accent,"center","bold");
+  text("Starting virtual system...",512,355,23,"#c3d9f5","center");
+
+  roundedRect(212,405,600,16,8,"#1c2b3e");
+  const progress=Math.min(1,(performance.now()-bootStarted)/bootDuration);
+  roundedRect(212,405,600*progress,16,8,t.accent);
+
+  text(Math.floor(progress*100)+"%",512,455,18,"#fff","center");
+  text("WEBXR SYSTEM LOADER",512,700,15,"#6985a7","center");
+
+  if(progress>=1)page="home";
+}
+
+function renderHome(){
+  header("Welcome back","Your virtual desktop is ready.");
+
+  const cards=[
+    ["Recovery Mode","Repair and recovery options","recovery"],
+    ["System Errors","BOOT FAIL and SYSTEM HALTED","errors"],
+    ["Settings","Themes and system settings","settings"],
+    ["Browser","Virtual browser information","browser"],
+    ["System Information","WebXR runtime status","system"],
+    ["About","About this simulation","about"]
+  ];
+
+  cards.forEach((item,i)=>{
+    const col=i%2,row=Math.floor(i/2);
+    const x=48+col*470,y=155+row*175;
+
+    roundedRect(x,y,440,145,16,theme().panel,theme().accent);
+    text(item[0],x+22,y+45,26,"#fff","left","bold");
+    text(item[1],x+22,y+77,16,"#b8d0e9");
+    button("OPEN",x+300,y+94,115,34,item[2],{size:17});
+  });
+
+  text(systemMessage,50,720,16,"#8dffce");
+}
+
+function renderRecovery(){
+  header("Recovery Mode","Virtual recovery environment");
+  text("Select an operation:",55,180,23);
+  text("These actions affect only this simulation.",55,214,17,"#b8d0e9");
+
+  button("Reboot system",55,255,425,70,"reboot");
+  button("Factory reset",545,255,425,70,"factory",{danger:true});
+  button("Show boot error",55,355,425,70,"bootfail",{danger:true});
+  button("System halted",545,355,425,70,"halt",{danger:true});
+  button("Back to desktop",55,475,915,65,"home");
+  text("Recovery environment: SIMULATED",55,620,18,"#ffce87");
+}
+
+function renderFactory(){
+  header("Factory Reset","Reset the virtual system");
+
+  roundedRect(65,175,894,210,18,"#35151d","#ff6575");
+  text("WARNING",512,225,32,"#ff8b98","center","bold");
+  text("This resets WebOS VR browser settings.",512,280,23,"#fff","center");
+  text("It cannot erase your real device.",512,320,20,"#ffd1d6","center");
+
+  button("CONFIRM RESET",90,430,410,75,"confirmreset",{danger:true});
+  button("CANCEL",525,430,410,75,"recovery");
+}
+
+function renderResetComplete(){
+  header("Factory Reset Complete","Virtual settings have been reset.");
+  text("RESET SUCCESSFUL",512,280,35,"#65ffb8","center","bold");
+  text("Your real device was not modified.",512,335,22,"#fff","center");
+  button("Reboot WebOS VR",220,420,585,75,"reboot");
+}
+
+function renderBootFail(){
+  ctx.fillStyle="#090000";
+  ctx.fillRect(0,0,1024,768);
+
+  text("BOOT FAIL",512,235,58,"#ff3b4b","center","bold");
+  text("The virtual operating system failed to boot.",512,300,22,"#fff","center");
+  text("Error code: WEBOS_VR_BOOT_001",512,355,19,"#ff9ba4","center");
+  text("No real firmware or storage was changed.",512,405,18,"#c8b8b8","center");
+
+  button("TRY AGAIN",90,500,410,70,"reboot",{danger:true});
+  button("RECOVERY MODE",525,500,410,70,"recovery");
+}
+
+function renderHalted(){
+  ctx.fillStyle="#050505";
+  ctx.fillRect(0,0,1024,768);
+
+  text("SYSTEM HALTED!",512,220,48,"#ff4141","center","bold");
+  text("A simulated critical system error occurred.",512,280,21,"#fff","center");
+
+  roundedRect(110,335,804,100,8,"#171717","#a52a2a");
+  text("STOP CODE: WEBOS_VR_CRITICAL_ERROR",512,377,18,"#ff8585","center");
+  text("The virtual system has stopped.",512,410,16,"#c7c7c7","center");
+
+  button("RESTART",90,500,410,70,"reboot",{danger:true});
+  button("OPEN RECOVERY",525,500,410,70,"recovery");
+}
+
+function renderErrors(){
+  header("System Errors","Virtual error diagnostics");
+  button("BOOT FAIL",55,200,440,75,"bootfail",{danger:true});
+  button("SYSTEM HALTED!",525,200,440,75,"halt",{danger:true});
+  button("Recovery Mode",55,325,910,65,"recovery");
+  button("Back to desktop",55,430,910,65,"home");
+}
+
+function renderSettings(){
+  header("Settings","Customize your virtual experience");
+
+  text("Choose a theme:",55,190,24);
+  button("Blue theme",55,230,280,65,"themeblue");
+  button("Purple theme",370,230,280,65,"themepurple");
+  button("Green theme",685,230,280,65,"themegreen");
+
+  text("Current theme: "+currentTheme,55,365,21,theme().accent);
+  text("Selection: center gaze + 1.5-second dwell",55,420,19);
+  text("Desktop selection: mouse click",55,455,19);
+  button("Back to desktop",55,550,910,65,"home");
+}
+
+function renderBrowser(){
+  header("Browser","Virtual browser application");
+  roundedRect(55,175,915,250,15,theme().panel,theme().accent);
+  text("Welcome to WebOS VR Browser",85,230,28,"#fff","left","bold");
+  text("This demo does not load external webpages.",85,285,20,"#b8d0e9");
+  text("Explore the virtual operating system.",85,330,18,"#b8d0e9");
+  text("WebXR depends on your browser and headset.",85,375,17,"#b8d0e9");
+  button("Back to desktop",55,500,915,65,"home");
+}
+
+function renderSystem(){
+  header("System Information","Virtual device status");
+
+  const rows=[
+    ["Operating system","WebOS VR"],
+    ["Environment","Browser-based simulation"],
+    ["Rendering engine","Three.js / WebGL"],
+    ["Immersive interface","WebXR"],
+    ["VR session",renderer.xr.isPresenting?"ACTIVE":"NOT ACTIVE"],
+    ["Recovery environment","SIMULATED"],
+    ["Physical firmware","NOT MODIFIED"]
+  ];
+
+  rows.forEach((row,i)=>{
+    const y=180+i*58;
+    text(row[0],65,y,20,"#b8d0e9");
+    text(row[1],480,y,20,"#fff");
+  });
+
+  button("Back to desktop",55,620,915,65,"home");
+}
+
+function renderAbout(){
+  header("About WebOS VR","A virtual operating system experiment");
+  text("WebOS VR",512,230,42,theme().accent,"center","bold");
+  text("A WebXR-powered virtual tablet interface.",512,290,22,"#fff","center");
+  text("Includes boot, recovery, reset and error simulations.",512,335,18,"#b8d0e9","center");
+  text("Factory reset cannot erase your headset.",512,380,18,"#b8d0e9","center");
+  button("Back to desktop",55,500,915,65,"home");
+}
+
+function renderUI(){
+  hits=[];
+
+  switch(page){
+    case "boot":renderBoot();break;
+    case "home":renderHome();break;
+    case "recovery":renderRecovery();break;
+    case "factory":renderFactory();break;
+    case "resetcomplete":renderResetComplete();break;
+    case "bootfail":renderBootFail();break;
+    case "halt":renderHalted();break;
+    case "errors":renderErrors();break;
+    case "settings":renderSettings();break;
+    case "browser":renderBrowser();break;
+    case "system":renderSystem();break;
+    case "about":renderAbout();break;
+    default:page="home";renderHome();
+  }
+
+  screenTexture.needsUpdate=true;
+  status.textContent="WEBOS VR · "+page.toUpperCase();
+}
+
+function activate(action){
+  if(!action)return;
+
+  switch(action){
+    case "home":page="home";break;
+    case "recovery":page="recovery";break;
+    case "factory":page="factory";break;
+
+    case "confirmreset":
+      try{localStorage.removeItem("webos-vr-theme")}catch{}
+      currentTheme="blue";
+      page="resetcomplete";
+      systemMessage="Virtual settings reset.";
+      break;
+
+    case "reboot":
+      page="boot";
+      bootStarted=performance.now();
+      break;
+
+    case "bootfail":page="bootfail";break;
+    case "halt":page="halt";break;
+    case "errors":page="errors";break;
+    case "settings":page="settings";break;
+    case "browser":page="browser";break;
+    case "system":page="system";break;
+    case "about":page="about";break;
+
+    case "themeblue":setTheme("blue");break;
+    case "themepurple":setTheme("purple");break;
+    case "themegreen":setTheme("green");break;
+  }
+
+  highlighted=null;
+  dwellStart=0;
+  renderUI();
+}
+
+function setTheme(name){
+  currentTheme=name;
+  try{localStorage.setItem("webos-vr-theme",name)}catch{}
+}
+
+// Raycasting converts the center gaze or desktop mouse position
+// into coordinates on the virtual tablet.
+const raycaster=new THREE.Raycaster();
+const mouse=new THREE.Vector2(0,0);
+
+function updateRay(){
+  if(renderer.xr.isPresenting){
+    const xrCamera=renderer.xr.getCamera(camera);
+    raycaster.setFromCamera(new THREE.Vector2(0,0),xrCamera);
+  }else{
+    raycaster.setFromCamera(mouse,camera);
+  }
+}
+
+function findTarget(){
+  updateRay();
+
+  const intersections=raycaster.intersectObject(screen,false);
+  if(!intersections.length)return null;
+
+  const uv=intersections[0].uv;
+  if(!uv)return null;
+
+  const px=uv.x*screenCanvas.width;
+  const py=(1-uv.y)*screenCanvas.height;
+
+  return hits.find(hit=>
+    px>=hit.x&&px<=hit.x+hit.w&&
+    py>=hit.y&&py<=hit.y+hit.h
+  )||null;
+}
+
+renderer.domElement.addEventListener("pointermove",event=>{
+  if(renderer.xr.isPresenting)return;
+
+  mouse.x=event.clientX/innerWidth*2-1;
+  mouse.y=-(event.clientY/innerHeight*2-1);
+});
+
+renderer.domElement.addEventListener("pointerdown",event=>{
+  if(renderer.xr.isPresenting)return;
+
+  mouse.x=event.clientX/innerWidth*2-1;
+  mouse.y=-(event.clientY/innerHeight*2-1);
+
+  const target=findTarget();
+  if(target)activate(target.action);
+});
+
+// WebXR entry button
+document.body.appendChild(VRButton.createButton(renderer));
+
+// Animation and dwell selection
+let lastBootRender=0;
+
+renderer.setAnimationLoop(()=>{
+  const now=performance.now();
+
+  if(page==="boot"&&now-lastBootRender>50){
+    renderUI();
+    lastBootRender=now;
+  }
+
+  const target=findTarget();
+  const action=target?target.action:null;
+
+  if(action!==highlighted){
+    highlighted=action;
+    dwellStart=now;
+    crosshair.classList.toggle("target",Boolean(action));
+    renderUI();
+  }else if(action&&now-dwellStart>=1500&&now-lastActivated>=1800){
+    lastActivated=now;
+    activate(action);
+  }
+
+  renderer.render(scene,camera);
+});
+
+document.getElementById("startButton").addEventListener("click",()=>{
+  document.getElementById("start").classList.add("hidden");
+
+  try{
+    const saved=localStorage.getItem("webos-vr-theme");
+    if(saved&&themes[saved])currentTheme=saved;
+  }catch{}
+
+  page="boot";
+  bootStarted=performance.now();
+  camera.position.set(0,1.6,0);
+  camera.lookAt(0,1.6,-2.5);
+  renderUI();
+});
+
+window.addEventListener("resize",()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+renderUI();
+
+if(!navigator.xr){
+  errorBox.textContent=
+    "WebXR is unavailable in this browser. Desktop mode remains available.";
+}
+</script></body>
+</html>
